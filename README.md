@@ -439,6 +439,11 @@ with:
 python -m twine upload dist/*
 ```
 
+The workflow in `.github/workflows/publish.yml` builds and uploads a release with
+PyPI trusted publishing. Add `thusharpradeep/rocm-check`, workflow `publish.yml`,
+and environment `pypi` as a trusted publisher on PyPI. The workflow runs when a
+GitHub release is published or when it is started manually.
+
 ## npm wrapper
 
 There is no npm package. A JavaScript wrapper would still require a working
