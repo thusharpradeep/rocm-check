@@ -27,14 +27,14 @@ generated directories by default. Files over 2 MB and binary files are skipped.
 
 Python 3.9 or newer is required.
 
-When the package is published on PyPI, install it with pip or pipx:
+Install from PyPI with pip or pipx:
 
 ```bash
 pip install rocm-check
 pipx install rocm-check
 ```
 
-Until the first PyPI release, install from a checkout:
+To install from a checkout instead:
 
 ```bash
 python -m venv .venv
@@ -144,7 +144,7 @@ Severity and score are the only colored elements. Set `NO_COLOR=1` or pass
 for `tests/samples/cuda_project`, with most rows omitted:
 
 ```text
-rocm-check  v0.2.0
+rocm-check  v0.2.1
 Target  tests/samples/cuda_project
 Files   6 scanned
 Issues  12 blockers   3 warnings   3 info
@@ -337,7 +337,7 @@ rocm-check tests/samples/cuda_project --json report.json
 ```json
 {
   "tool": "rocm-check",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "target": "tests/samples/cuda_project",
   "score": 0,
   "grade": "CUDA-locked",
@@ -430,19 +430,17 @@ python -m twine check dist/*
 ```
 
 The wheel includes `rules.yaml`, the HTML template, and the CSS and JavaScript
-assets. The project is prepared for PyPI but has not been published there yet.
-Publishing requires a PyPI account and either a trusted publisher configuration
-or an API token. After those credentials are configured, upload a checked build
-with:
+assets. Releases are published at https://pypi.org/project/rocm-check/. To upload
+a checked build by hand, configure a PyPI API token and run:
 
 ```bash
 python -m twine upload dist/*
 ```
 
 The workflow in `.github/workflows/publish.yml` builds and uploads a release with
-PyPI trusted publishing. Add `thusharpradeep/rocm-check`, workflow `publish.yml`,
-and environment `pypi` as a trusted publisher on PyPI. The workflow runs when a
-GitHub release is published or when it is started manually.
+PyPI trusted publishing. The trusted publisher is configured for
+`thusharpradeep/rocm-check`, workflow `publish.yml`, and environment `pypi`. The
+workflow runs when a GitHub release is published or when it is started manually.
 
 ## npm wrapper
 

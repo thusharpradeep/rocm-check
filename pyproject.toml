@@ -42,6 +42,7 @@ dev = [
 Homepage = "https://github.com/thusharpradeep/rocm-check"
 Repository = "https://github.com/thusharpradeep/rocm-check"
 Issues = "https://github.com/thusharpradeep/rocm-check/issues"
+PyPI = "https://pypi.org/project/rocm-check/"
 
 [project.scripts]
 rocm_check = "rocm_check.cli:main"
