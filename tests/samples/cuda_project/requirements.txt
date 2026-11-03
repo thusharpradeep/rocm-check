@@ -1,0 +1,5 @@
+torch>=2.1
+flash-attn>=2.5
+bitsandbytes==0.43.0
+numpy
+--extra-index-url https://download.pytorch.org/whl/cu121

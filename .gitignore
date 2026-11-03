@@ -1,0 +1,39 @@
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.tox/
+.nox/
+.coverage
+.coverage.*
+htmlcov/
+build/
+dist/
+wheelhouse/
+*.whl
+
+# Generated reports
+/report.json
+/report.md
+/report.html
+/rocm-report.json
+/rocm-report.md
+/rocm-report.html
+
+# Local configuration and secrets
+.env
+.env.*
+*.pem
+*.key
+*.log
+
+# Editor and OS files
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+Desktop.ini

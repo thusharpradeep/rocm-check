@@ -1,0 +1,527 @@
+# rocm-check detection rules.
+#
+# Schema (version 1):
+#   id           unique, stable identifier (string)
+#   name         short human label (string)
+#   severity     blocker | warning | info
+#   type         regex | dependency | file
+#   pattern      regular expression (required for regex/dependency)
+#   file_globs   globs matched against the basename or relative path
+#   flags        ignorecase | multiline | dotall
+#   tags         optional labels, for example hipify-able
+#   explanation  why this matters on ROCm
+#   suggestion   concrete porting fix
+#
+# Custom files can add rules or override built-ins with the same id.
+
+version: 1
+rules:
+  - id: torch-cuda-call
+    name: PyTorch CUDA API
+    severity: info
+    type: regex
+    pattern: >-
+      \btorch\.cuda\b(?!\.(?:nvtx|CUDAGraph|graphs?|make_graphed_callables|graph_pool_handle|amp)\b)
+    file_globs: ["*.py"]
+    explanation: >-
+      Uses the `torch.cuda` namespace. ROCm PyTorch implements this namespace on
+      top of HIP, so many calls work, but the code is written against the CUDA
+      API and may still assume NVIDIA-only behavior.
+    suggestion: >-
+      Select the device once with a device-agnostic helper, for example
+      `device = torch.accelerator.current_accelerator()` (PyTorch 2.5+), and use
+      `.to(device)`. Exercise the path on a ROCm GPU.
+
+  - id: tensor-dot-cuda
+    name: Tensor moved with .cuda()
+    severity: info
+    type: regex
+    pattern: >-
+      \.cuda\s*\(\s*\)
+    file_globs: ["*.py"]
+    explanation: >-
+      Moves a tensor or module to the CUDA device. On ROCm PyTorch this resolves
+      to HIP, but the call hard-codes the NVIDIA API and cannot target other
+      backends.
+    suggestion: >-
+      Replace `.cuda()` with `.to(device)`, where `device` is chosen at runtime
+      (CPU, CUDA, or ROCm).
+
+  - id: hardcoded-cuda-device
+    name: Hard-coded "cuda" device string
+    severity: info
+    type: regex
+    pattern: >-
+      ["']cuda(?::[0-9]+)?["']
+    file_globs: ["*.py"]
+    explanation: >-
+      Hard-codes the device name in a string. ROCm PyTorch accepts the "cuda"
+      alias, but other libraries do not, and the string hides the backend
+      assumption from readers and config layers.
+    suggestion: >-
+      Resolve the device at runtime, for example
+      `device = torch.device("cuda" if torch.cuda.is_available() else "cpu")`
+      or `torch.accelerator.current_accelerator()`, then pass `device` around.
+
+  - id: torch-cuda-nvtx
+    name: CUDA NVTX profiling
+    severity: warning
+    type: regex
+    pattern: >-
+      \btorch\.cuda\.nvtx\b
+    file_globs: ["*.py"]
+    explanation: >-
+      Emits NVTX markers through PyTorch's CUDA namespace. ROCm builds expose
+      `torch.cuda.nvtx` for compatibility, but profilers and capture tools may
+      not understand the generated ranges.
+    suggestion: >-
+      Guard NVIDIA-only profiling with a backend check, or use a portable
+      profiler such as PyTorch Profiler (`torch.profiler`) on ROCm.
+
+  - id: torch-cuda-graph
+    name: CUDA graph capture
+    severity: warning
+    type: regex
+    pattern: >-
+      \btorch\.cuda\.(?:CUDAGraph|graphs?|make_graphed_callables|graph_pool_handle)\b
+    file_globs: ["*.py"]
+    explanation: >-
+      Captures or replays CUDA graphs. ROCm supports graph capture on recent
+      releases, but support depends on the GPU, driver, and PyTorch version and
+      often differs from NVIDIA's behavior.
+    suggestion: >-
+      Test graph capture and replay on the target ROCm GPU/PyTorch combination,
+      or fall back to eager execution when `torch.version.hip` is set.
+
+  - id: torch-cuda-amp
+    name: torch.cuda.amp mixed precision
+    severity: warning
+    type: regex
+    pattern: >-
+      \btorch\.cuda\.amp\b
+    file_globs: ["*.py"]
+    explanation: >-
+      Uses the CUDA-specific AMP namespace, including custom kernels or
+      GradScaler paths. ROCm supports native `torch.amp`, but the legacy
+      `torch.cuda.amp` route can select CUDA-only behavior.
+    suggestion: >-
+      Move to the backend-agnostic `torch.amp.autocast` and
+      `torch.amp.GradScaler`, passing the device type explicitly
+      (`device_type="cuda"` works on ROCm PyTorch).
+
+  - id: cuda-visible-devices
+    name: CUDA_VISIBLE_DEVICES environment variable
+    severity: warning
+    type: regex
+    pattern: >-
+      \bCUDA_VISIBLE_DEVICES\b
+    explanation: >-
+      Controls device visibility through an NVIDIA-named variable. ROCm tools
+      expect `HIP_VISIBLE_DEVICES`, and honoring `CUDA_VISIBLE_DEVICES` varies
+      by tool.
+    suggestion: >-
+      Set `HIP_VISIBLE_DEVICES` on ROCm. If the script must support both, detect
+      the backend and set the matching variable (or set both).
+
+  - id: cuda-home-env
+    name: CUDA_HOME / CUDA_PATH assumption
+    severity: warning
+    type: regex
+    pattern: >-
+      \bCUDA_(?:HOME|PATH|ROOT)\b
+    explanation: >-
+      Assumes an NVIDIA CUDA toolkit location. ROCm installs its toolchain under
+      a different prefix and sets `ROCM_HOME`/`ROCM_PATH`.
+    suggestion: >-
+      Detect the toolkit at runtime (`ROCM_HOME`, `hipconfig --path`) and fall
+      back between CUDA and ROCm locations instead of hard-coding one.
+
+  - id: torch-backend-cuda
+    name: CUDA backend tuning
+    severity: warning
+    type: regex
+    pattern: >-
+      \btorch\.backends\.cuda\b
+    file_globs: ["*.py"]
+    explanation: >-
+      Configures NVIDIA-specific backend behavior (TF32, cuDNN, matmul
+      precision). Some of these switches do not exist or behave differently under
+      ROCm.
+    suggestion: >-
+      Guard NVIDIA-only tuning with `torch.version.hip is None`, or drop the
+      setting and benchmark the ROCm math libraries separately.
+
+  - id: cuda-runtime-api
+    name: CUDA Runtime API call
+    severity: blocker
+    type: regex
+    pattern: >-
+      \bcuda(?:Malloc|Memcpy|Memset|Free|DeviceSynchronize|StreamCreate|StreamDestroy|EventCreate|EventDestroy|GetDeviceCount|SetDevice|GetDeviceProperties|GetLastError|PeekAtLastError)\b
+    file_globs: ["*.cu", "*.cuh", "*.cpp", "*.cc", "*.cxx", "*.h", "*.hpp"]
+    tags: ["hipify-able"]
+    explanation: >-
+      Calls the CUDA Runtime API directly. These symbols are provided by the
+      NVIDIA CUDA toolkit and do not link against ROCm.
+    suggestion: >-
+      Port to the HIP runtime (`hipMalloc`, `hipMemcpy`,
+      `hipDeviceSynchronize`, ...), or hipify the source with
+      `hipify-perl <file> > <file>.hip.cpp` (or
+      `hipify-clang <file> --cuda-path=/usr/local/cuda -o <file>.hip.cpp`) and
+      build the result with `hipcc`.
+
+  - id: cuda-include
+    name: CUDA toolkit header
+    severity: blocker
+    type: regex
+    pattern: >-
+      #\s*include\s*[<"](?:cuda_runtime|device_launch_parameters|cublas|cublas_v2|cudnn|cufft|cusparse|cusolver|curand|nccl|nvml|cuda)\.h[>"]
+    file_globs: ["*.cu", "*.cuh", "*.cpp", "*.cc", "*.cxx", "*.h", "*.hpp"]
+    explanation: >-
+      Includes a header from the NVIDIA CUDA toolkit. ROCm ships different
+      headers and libraries, so this file will not compile as-is.
+    suggestion: >-
+      Include the HIP/ROCm equivalent (`hip/hip_runtime.h`, hipBLAS, MIOpen,
+      hipFFT, rocSPARSE, rocRAND, RCCL) and hipify the rest of the include graph.
+
+  - id: cuda-kernel-launch
+    name: CUDA kernel launch syntax
+    severity: warning
+    type: regex
+    pattern: >-
+      <<<[^>]*>>>
+    file_globs: ["*.cu", "*.cuh", "*.cpp", "*.cc", "*.cxx"]
+    explanation: >-
+      Uses CUDA's triple-chevron launch syntax. HIP supports it when compiled
+      with hipcc, but only if the translation unit is built through the HIP
+      toolchain.
+    suggestion: >-
+      Compile the file with `hipcc` and include `hip/hip_runtime.h`; otherwise
+      rewrite the launch with the HIP runtime API.
+
+  - id: cuda-nvcc
+    name: nvcc invocation
+    severity: blocker
+    type: regex
+    pattern: >-
+      \bnvcc\b
+    file_globs: ["*.py", "*.cu", "*.cuh", "*.cpp", "setup.py", "pyproject.toml", "Dockerfile", "Dockerfile.*", "*.Dockerfile"]
+    explanation: >-
+      Invokes NVIDIA's nvcc compiler, which is not present in a ROCm
+      environment.
+    suggestion: >-
+      Build with `hipcc` instead. With setuptools, use
+      `torch.utils.cpp_extension.HIPExtension` and point at `ROCM_HOME`.
+
+  - id: cuda-arch-flags
+    name: NVIDIA GPU architecture flag
+    severity: warning
+    type: regex
+    pattern: >-
+      (?:-gencode|-arch)\b|\barch=compute_[0-9]+|\bsm_[0-9]+
+    file_globs: ["*.py", "*.cu", "*.cuh", "*.cpp", "setup.py", "pyproject.toml", "Dockerfile", "Dockerfile.*", "*.Dockerfile"]
+    explanation: >-
+      Targets NVIDIA GPU architectures (`sm_XX`). Those targets are meaningless
+      to the AMD compiler and will fail or silently produce an unusable build.
+    suggestion: >-
+      Target AMD architectures such as `gfx90a` (MI200) or `gfx942` (MI300) via
+      `AMDGPU_TARGETS` / `--offload-arch`, or let hipcc detect the local GPU.
+
+  - id: torch-cuda-extension
+    name: torch CUDAExtension
+    severity: blocker
+    type: regex
+    pattern: >-
+      \bCUDAExtension\b
+    file_globs: ["setup.py", "pyproject.toml", "*.py"]
+    explanation: >-
+      Builds a PyTorch C++/CUDA extension with NVIDIA's extension class, which
+      invokes nvcc and links CUDA libraries.
+    suggestion: >-
+      Use `torch.utils.cpp_extension.HIPExtension` (or a plain `Extension` built
+      with hipcc) and set `ROCM_HOME`; hipify the kernel sources first.
+
+  - id: cuda-only-import
+    name: CUDA-only Python import
+    severity: blocker
+    type: regex
+    pattern: >-
+      ^\s*(?:(?:from|import)\s+(?:pycuda|cupy|numba\.cuda|cuda)\b|from\s+numba\s+import\s+.*\bcuda\b)
+    file_globs: ["*.py"]
+    flags: ["multiline"]
+    explanation: >-
+      Imports a CUDA-only Python library. These packages either require the CUDA
+      toolkit at build time or have no ROCm backend.
+    suggestion: >-
+      Use a ROCm-supported alternative: NumPy or PyTorch tensors for array
+      math, PyTorch's hipBLAS/MIOpen-backed ops, or a ROCm build of the library.
+      Keep the CUDA path behind an optional import if both must coexist.
+
+  - id: cuda-only-package-import
+    name: CUDA-only package import
+    severity: blocker
+    type: regex
+    pattern: >-
+      ^\s*(?:from|import)\s+(?:flash_attn|flash_attn_2_cuda|bitsandbytes|xformers|apex)\b
+    file_globs: ["*.py"]
+    flags: ["multiline"]
+    explanation: >-
+      Imports an ecosystem package whose wheels and kernels are built for CUDA.
+      Importing it on a ROCm install fails unless a ROCm-compatible build is
+      present.
+    suggestion: >-
+      Replace the dependency with a ROCm-supported alternative (for example
+      PyTorch's scaled_dot_product_attention or native AMP) or install a
+      ROCm-compatible build and guard the import at runtime.
+
+  - id: cuda-only-package-install
+    name: CUDA-only package installed in a Dockerfile
+    severity: blocker
+    type: regex
+    pattern: >-
+      (?:pip3?|python3?\s+-m\s+pip|uv\s+pip|conda)\s+install\b[^\n]*\b(?:flash[-_]?attn|bitsandbytes|xformers|apex|cupy|pycuda|tensorrt|cudnn|onnxruntime-gpu)\b
+    file_globs: ["Dockerfile", "Dockerfile.*", "*.Dockerfile"]
+    explanation: >-
+      Installs a CUDA-only package during the image build. The resulting
+      container will fail to install the package or silently lack its GPU
+      kernels on ROCm.
+    suggestion: >-
+      Install a ROCm-compatible build or replace the package with a portable
+      alternative, and verify the image on an AMD GPU before merging.
+
+  - id: cuda-docker-base
+    name: CUDA-based Docker image
+    severity: blocker
+    type: regex
+    pattern: >-
+      ^\s*FROM\s+(?:--platform=\S+\s+)?(?:nvidia/cuda|nvcr\.io/nvidia|pytorch/pytorch:\S*cuda|\S*cuda[:/])\S*
+    file_globs: ["Dockerfile", "Dockerfile.*", "*.Dockerfile"]
+    flags: ["ignorecase", "multiline"]
+    explanation: >-
+      Starts from an NVIDIA CUDA image. The image ships the CUDA runtime and
+      drivers, neither of which works with AMD GPUs.
+    suggestion: >-
+      Use a ROCm base image (`rocm/pytorch:latest`,
+      `rocm/dev-ubuntu-22.04`, or `rocm/rocm-terminal`) and install PyTorch from
+      the ROCm wheel index or repo.radeon.com.
+
+  - id: cuda-wheel-index
+    name: CUDA PyTorch wheel index
+    severity: blocker
+    type: regex
+    pattern: >-
+      (?:download\.pytorch\.org/whl/cu[0-9]+|/whl/cu[0-9]+)
+    file_globs: ["requirements*.txt", "setup.py", "pyproject.toml", "Dockerfile", "Dockerfile.*", "*.Dockerfile"]
+    flags: ["ignorecase"]
+    explanation: >-
+      Installs wheels from a CUDA-specific PyTorch index. Those binaries link
+      against the CUDA runtime.
+    suggestion: >-
+      Use the ROCm wheel index (for example
+      `https://download.pytorch.org/whl/rocm6.2`) or the ROCm packages from
+      repo.radeon.com.
+
+  - id: cuda-version-pin
+    name: CUDA-local wheel version pin
+    severity: blocker
+    type: regex
+    pattern: >-
+      \+cu[0-9]{2,3}\b
+    file_globs: ["requirements*.txt", "setup.py", "pyproject.toml"]
+    explanation: >-
+      Pins a wheel built for a specific CUDA version (`+cu121`). That local
+      version does not exist in ROCm builds.
+    suggestion: >-
+      Switch to the ROCm wheel variant (`+rocm6.2`) or install from the ROCm
+      index without a CUDA local-version pin.
+
+  - id: nvidia-smi
+    name: nvidia-smi usage
+    severity: warning
+    type: regex
+    pattern: >-
+      \bnvidia-smi\b
+    explanation: >-
+      Queries GPU state through NVIDIA's tool, which is absent on AMD systems.
+    suggestion: >-
+      Use `rocm-smi` (or `amd-smi`) on ROCm, selected behind a runtime check.
+
+  - id: nccl-reference
+    name: NCCL reference
+    severity: info
+    type: regex
+    pattern: >-
+      \bnccl\b
+    flags: ["ignorecase"]
+    explanation: >-
+      Refers to NVIDIA's collective communication library. ROCm provides RCCL
+      behind the same PyTorch distributed backend name, but direct NCCL API use
+      needs porting.
+    suggestion: >-
+      Use `torch.distributed` (PyTorch maps the `nccl` backend to RCCL on ROCm)
+      or the RCCL API; verify any custom NCCL calls on ROCm hardware.
+
+  - id: dep-flash-attn
+    name: "CUDA-only package: flash-attn"
+    severity: blocker
+    type: dependency
+    pattern: >-
+      \bflash[-_]?(?:attn|attention)\b
+    file_globs: ["requirements*.txt", "setup.py", "setup.cfg", "pyproject.toml"]
+    explanation: >-
+      flash-attn is built around CUDA kernels and its upstream wheels target
+      NVIDIA GPUs.
+    suggestion: >-
+      Use PyTorch's portable `torch.nn.functional.scaled_dot_product_attention`
+      (backed by Composable Kernel on ROCm), or a ROCm-compatible
+      flash-attention fork, and gate the import.
+
+  - id: dep-bitsandbytes
+    name: "CUDA-only package: bitsandbytes"
+    severity: blocker
+    type: dependency
+    pattern: >-
+      \bbitsandbytes\b
+    file_globs: ["requirements*.txt", "setup.py", "setup.cfg", "pyproject.toml"]
+    explanation: >-
+      bitsandbytes ships CUDA kernels for 8-bit optimizers and quantization. ROCm
+      support depends on the version and a source build.
+    suggestion: >-
+      Use a bitsandbytes release with ROCm multi-backend support, or switch to
+      `torchao` quantization / native `torch.amp` mixed precision.
+
+  - id: dep-xformers
+    name: "CUDA-only package: xformers"
+    severity: blocker
+    type: dependency
+    pattern: >-
+      \bxformers\b
+    file_globs: ["requirements*.txt", "setup.py", "setup.cfg", "pyproject.toml"]
+    explanation: >-
+      xformers provides fused attention kernels written for CUDA; ROCm support
+      requires a matching source build and is not available from the standard
+      wheel.
+    suggestion: >-
+      Replace with `torch.nn.functional.scaled_dot_product_attention`, which
+      selects a ROCm-compatible kernel, or build a ROCm-compatible xformers
+      wheel.
+
+  - id: dep-apex
+    name: "CUDA-only package: apex"
+    severity: blocker
+    type: dependency
+    pattern: >-
+      \bapex\b
+    file_globs: ["requirements*.txt", "setup.py", "setup.cfg", "pyproject.toml"]
+    explanation: >-
+      NVIDIA apex compiles CUDA extensions and relies on CUDA-specific APIs.
+    suggestion: >-
+      Use native PyTorch AMP: `torch.amp.autocast`, `torch.amp.GradScaler`, and
+      `torch.nn.utils.clip_grad_norm_`. Those paths work on ROCm.
+
+  - id: dep-cupy
+    name: "CUDA-only package: cupy"
+    severity: blocker
+    type: dependency
+    pattern: >-
+      \bcupy(?:-cuda[0-9]*)?\b
+    file_globs: ["requirements*.txt", "setup.py", "setup.cfg", "pyproject.toml"]
+    explanation: >-
+      CuPy provides NumPy-compatible arrays on CUDA and requires the CUDA
+      toolkit; it has no ROCm backend.
+    suggestion: >-
+      Use NumPy or PyTorch tensors on ROCm. Keep CuPy usage behind an optional
+      import if the CUDA path must remain.
+
+  - id: dep-pycuda
+    name: "CUDA-only package: pycuda"
+    severity: blocker
+    type: dependency
+    pattern: >-
+      \bpycuda\b
+    file_globs: ["requirements*.txt", "setup.py", "setup.cfg", "pyproject.toml"]
+    explanation: >-
+      PyCUDA compiles and runs CUDA source through the NVIDIA driver API.
+    suggestion: >-
+      Port to HIP with `hipify`, use `torch.utils.cpp_extension` with hipcc, or
+      call ROCm libraries such as hipBLAS directly.
+
+  - id: dep-cuda-python
+    name: "CUDA-only package: cuda-python / cudatoolkit"
+    severity: blocker
+    type: dependency
+    pattern: >-
+      \b(?:cuda-python|cudatoolkit|cuda-toolkit)\b
+    file_globs: ["requirements*.txt", "setup.py", "setup.cfg", "pyproject.toml"]
+    explanation: >-
+      Depends on NVIDIA's CUDA Python bindings or toolkit package, which are not
+      available in a ROCm environment.
+    suggestion: >-
+      Use HIP Python bindings (hip-python) or ROCm libraries through PyTorch;
+      remove the CUDA toolkit dependency from the ROCm install path.
+
+  - id: dep-tensorrt
+    name: "CUDA-only package: TensorRT"
+    severity: blocker
+    type: dependency
+    pattern: >-
+      \btensorrt\b
+    file_globs: ["requirements*.txt", "setup.py", "setup.cfg", "pyproject.toml"]
+    explanation: >-
+      TensorRT requires NVIDIA GPUs, drivers, and the CUDA toolkit.
+    suggestion: >-
+      Use ONNX Runtime's ROCm/MIGraphX execution provider or native PyTorch
+      inference on ROCm.
+
+  - id: dep-cudnn
+    name: "CUDA-only package: cuDNN"
+    severity: blocker
+    type: dependency
+    pattern: >-
+      \bcudnn\b
+    file_globs: ["requirements*.txt", "setup.py", "setup.cfg", "pyproject.toml"]
+    explanation: >-
+      cuDNN is NVIDIA's deep-learning primitives library and cannot run on AMD
+      GPUs.
+    suggestion: >-
+      Use MIOpen, which PyTorch and most ROCm frameworks select automatically.
+
+  - id: dep-onnxruntime-gpu
+    name: "CUDA-only package: onnxruntime-gpu"
+    severity: blocker
+    type: dependency
+    pattern: >-
+      \bonnxruntime-gpu\b
+    file_globs: ["requirements*.txt", "setup.py", "setup.cfg", "pyproject.toml"]
+    explanation: >-
+      The `onnxruntime-gpu` wheel is built with the CUDA execution provider.
+    suggestion: >-
+      Install an ONNX Runtime build with the ROCm/MIGraphX execution provider, or
+      run inference through PyTorch on ROCm.
+
+  - id: dep-jax-cuda
+    name: "CUDA-only extra: jax[cuda]"
+    severity: blocker
+    type: dependency
+    pattern: >-
+      \bjax\[cuda[0-9]*\]
+    file_globs: ["requirements*.txt", "setup.py", "setup.cfg", "pyproject.toml"]
+    explanation: >-
+      The `jax[cuda]` extra pulls CUDA-enabled jaxlib wheels.
+    suggestion: >-
+      Install the ROCm jaxlib build instead of the CUDA extra, then keep
+      `jax`/`jaxlib` versions matched.
+
+  - id: cuda-source-file
+    name: CUDA source file
+    severity: blocker
+    type: file
+    file_globs: ["*.cu", "*.cuh"]
+    tags: ["hipify-able"]
+    explanation: >-
+      CUDA source and header files only compile with NVIDIA's toolchain. ROCm's
+      hipcc cannot consume them without hipification.
+    suggestion: >-
+      Port with `hipify-perl <file> > <file>.hip.cpp` or
+      `hipify-clang <file> --cuda-path=/usr/local/cuda -o <file>.hip.cpp`, then
+      build the hipified source with `hipcc`. Alternatively isolate the CUDA
+      implementation behind a backend switch and provide a HIP version.
